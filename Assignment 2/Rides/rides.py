@@ -1,0 +1,268 @@
+from flask import Flask,render_template,jsonify,request,abort
+import requests
+import sqlite3
+import re
+import csv
+from datetime import datetime
+
+
+app=Flask(__name__)
+
+
+@app.route('/')
+def hello_world():
+	return "Rides API"
+
+
+@app.route('/api/v1/rides',methods=["POST"])
+def new_ride():
+	data = request.get_json()
+	if("created_by" in data and "timestamp" in data and "source" in data and "destination" in data):
+		created_by=data["created_by"]
+		tstamp=data["timestamp"]
+		intsource=data["source"]
+		intdest=data["destination"]
+		isvalidDate = True
+		try:
+			date_object = datetime.strptime(tstamp, "%d-%m-%Y:%S-%M-%H")
+			date_object = str(date_object)
+		except ValueError:
+			isvalidDate = False
+		src=int(intsource)
+		dst=int(intdest)
+		source=0
+		dest=0
+		with open('AreaNameEnum.csv', 'r') as file:
+			reader = csv.reader(file)
+			for row in reader:
+				if row[0]==intsource:
+					source=int(row[0])
+				if row[0]==intdest:
+					dest=int(row[0])
+		url = 'http://users:8080/api/v1/users'
+		#myobj = {"command": "select","table":"users","where":"username="+"'"+created_by+"'"}
+		response = requests.get(url=url)
+		if(response.status_code==204):
+			return jsonify ({}),400
+		else:
+			y = response.json()
+			#print(y)
+			n = len(y)
+			if(source==0 or dest==0 or (source>0 and dest>0 and source==dest) or not(isvalidDate) or (created_by not in y)):
+				return jsonify ({}),400
+			elif((created_by in y) and isvalidDate):
+				url = 'http://0.0.0.0:8000/api/v1/db/write'
+				myobj = {"command": "insert","table":"rides","column_list":{"created_by":"'"+created_by+"'","time_stamp":"'"+data["timestamp"]+"'","source":"'"+intsource+"'","destination":"'"+intdest+"'"}}
+				response = requests.post(url, json = myobj)
+				return jsonify ({}),201
+	else:
+		return jsonify ({}),400
+
+
+@app.route('/api/v1/rides',methods=["GET"])
+def upcoming_rides():
+	source = request.args.get('source')
+	destination = request.args.get('destination')
+	current_time = datetime.now()
+	src = 0
+	dest = 0
+	with open('AreaNameEnum.csv', 'r') as file:
+		reader = csv.reader(file)
+		for row in reader:
+			if row[0]==source:
+				src=int(row[0])
+			if row[0]==destination:
+				dest=int(row[0])
+	if(src==0 or dest==0 or (src>0 and dest>0 and src==dest)):
+		return jsonify({}),400
+	else:
+		url = 'http://0.0.0.0:8000/api/v1/db/read'
+		myobj = {"command": "select","table":"rides","where":"source="+str(src)+" and destination="+str(dest)}
+		response = requests.post(url, json = myobj)
+		x =  response.json()
+		l=[]
+		for i in x:
+			temp = i[2].split(':')[0]
+			temp1 = i[2].split(':')[1]
+			f = temp.split('-')
+			d = int(f[0])
+			m = int(f[1])
+			yy = int(f[2])
+			f1 = temp1.split('-')
+			ss = int(f1[0])
+			mm = int(f1[1])
+			h = int(f1[2])
+			if(datetime(yy, m, d, h,mm,ss)>current_time):
+				p={"username":i[1],"rideId":str(i[0]),"timestamp":i[2]}
+				l.append(p)
+		if(len(l)>0):
+			return jsonify(l),200
+		else:
+			return jsonify({}),204
+
+
+@app.route('/api/v1/rides/<rideid>',methods=["GET"])
+def ride_details(rideid):
+	url = 'http://0.0.0.0:8000/api/v1/db/read'
+	myobj = {"command": "select","table":"rides","where":"rideid="+rideid}
+	response = requests.post(url, json = myobj)
+	n = len(response.json())
+	if(n==1):
+		myobj = {"command": "select","table":"ridepool","column_list":["username"],"where":"rideid="+rideid}
+		resp1 = requests.post(url, json = myobj)
+		ride = response.json()[0]
+		q=[]
+		for i in resp1.json():
+			for j in i:
+				q.append(j)
+		p={"rideId":str(ride[0]),"created_by":ride[1],"users":q,"timestamp":ride[2],"source":str(ride[3]),"destination":str(ride[4])}
+		return jsonify(p),200
+	else:
+		return '',204
+
+
+@app.route('/api/v1/rides/<rideid>',methods=["POST"])
+def join_ride(rideid):
+	n1=0
+	n2=0
+	data = request.get_json()
+	username = data["username"]
+	#print(data)
+	if("username" in data):
+		url = 'http://users:8080/api/v1/users'
+		resp1 = requests.get(url)
+		if(resp1.status_code==204):
+			return jsonify({}),400
+		else:
+			y = resp1.json()
+			url = 'http://0.0.0.0:8000/api/v1/db/read'
+			obj2 = {"command":"select","table":"rides","where":"rideid="+rideid}
+			resp2 = requests.post(url, json = obj2)
+			n2 = len(resp2.json())
+
+			if((username in y) and n2==1):
+				obj3 = {"command":"select","table":"rides","where":"created_by='"+data["username"]+"' and rideid="+rideid}
+				resp3 = requests.post(url, json = obj3)
+				n3 = len(resp3.json())
+
+				url1 = 'http://0.0.0.0:8000/api/v1/db/write'
+				obj = {"command":"select","table":"ridepool","where":"rideid="+rideid+" and "+"username='"+data["username"]+"'"}
+				resp = requests.post(url, json=obj)
+				if(len(resp.json())==0 and n3==0):
+					obj = {"command":"insert","table":"ridepool","column_list":{"rideid":rideid,"username":"'"+data["username"]+"'"}}
+					resp = requests.post(url1, json=obj)
+					return jsonify({}),200
+				elif(n3==1):
+					return "Creator of ride cannot join the same ride.",400
+				else:
+					return "Already part of ride.",400
+			else:
+				return jsonify({}),400
+	else:
+		return jsonify({}),400
+
+
+@app.route('/api/v1/rides/<rideid>',methods=["DELETE"])
+def delete_ride(rideid):
+	url = 'http://0.0.0.0:8000/api/v1/db/read'
+	myobj = {"command": "select","table":"rides","where":"rideid="+rideid}
+	response = requests.post(url, json = myobj)
+	n = len(response.json())
+	if(n>0):
+		url1 = 'http://0.0.0.0:8000/api/v1/db/write'
+		obj1 = {"command": "delete","table":"rides","where":"rideid="+rideid}
+		resp1 = requests.post(url1, json = obj1)
+		obj2 = {"command": "delete","table":"ridepool","where":"rideid="+rideid}
+		resp2 = requests.post(url1, json = obj2)
+		return jsonify({}),200
+	else:
+		return jsonify({}),400
+
+
+@app.route('/api/v1/db/write',methods=["POST"])
+def write_db():
+	data = request.get_json()
+	if("table" not in data or "command" not in data):
+		return "Incorrect command/data.",400
+	else:
+		table=data["table"]
+	if(data["command"]=="insert"):
+		cols = data["column_list"]
+		s=""
+		for i in cols:
+			s=s+i+","
+		s=s[:len(s)-1]
+		t=""
+		for i in cols:
+			t=t+cols[i]+","
+		t=t[:len(t)-1]
+		sql = "insert into "+table+"("+s+") VALUES ("+t+")"
+	elif(data["command"]=="delete"):
+		s = ""
+		sql = "delete from "+table 
+		if("where" in data):
+			sql = sql + " where "+ data["where"]
+	else:
+		return "Incorrect command/data.",400
+	try:
+		with sqlite3.connect("rides.db") as con:
+			cur = con.cursor()
+			cur.execute(sql)
+			con.commit()
+		return "Ok",200
+	except:
+		return "Incorrect command/data.",400
+
+@app.route('/api/v1/db/read',methods=["POST"])
+def read_db():
+	data = request.get_json()
+	if("table" not in data):
+		return "Incorrect command/data.",400
+	else:
+		table=data["table"]
+	sql = "select "
+	if(data["command"]=="select"):
+		if("column_list" in data):
+			for i in data["column_list"]:
+				sql = sql + i + ","
+			sql = sql[:len(sql)-1] + " from " + table
+		else:
+			sql = sql+"* from "+table
+		if("where" in data):
+			sql = sql + " where "+ data["where"]
+		if("group by" in data):
+			sql = sql + " group by "
+			for i in data["group by"]:
+				sql = sql + i + ","
+			sql = sql[:len(sql)-1]
+		try:
+			with sqlite3.connect("rides.db") as con:
+				cur = con.cursor()
+				cur.execute(sql)
+				rows = cur.fetchall()
+				con.commit()
+			return jsonify(rows),200
+		except:
+			return "Incorrect command/data.",400
+	else:
+		return "Incorrect command/data.",400
+
+
+@app.route('/api/v1/db/clear',methods=["POST"])
+def clear_db():
+	try:
+		with sqlite3.connect("rides.db") as con:
+			cur = con.cursor()
+			cur.execute("drop table rides")
+			cur.execute("drop table ridepool")
+			cur.execute('''CREATE TABLE RIDES(rideid INTEGER PRIMARY KEY AUTOINCREMENT, created_by TEXT NOT NULL, time_stamp NUMERIC NOT NULL ,source INTEGER NOT NULL,destination INTEGER NOT NULL);''')
+			cur.execute('''CREATE TABLE RIDEPOOL(rideid INTEGER NOT NULL,username TEXT NOT NULL);''')
+			con.commit()
+		return "OK",200
+	except:
+		return "Incorrect command/data.",400
+
+
+if __name__ == '__main__':	
+	app.debug=True
+	app.run(host="0.0.0.0",port=8000)
